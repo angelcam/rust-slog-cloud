@@ -251,3 +251,152 @@ impl HttpClient {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use bytes::Bytes;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::{TcpListener, TcpStream},
+        task::JoinHandle,
+    };
+
+    use crate::error::Error;
+
+    use super::{HttpClient, HttpClientError, Method, SendError, StatusCode, Url};
+
+    /// Accept a single HTTP request and respond with a given status code and
+    /// body.
+    ///
+    /// The returned task resolves to the request head and body.
+    async fn serve_once(status: u16, body: &'static str) -> (Url, JoinHandle<(String, Vec<u8>)>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+
+        let local_addr = listener.local_addr();
+
+        let url = format!("http://{}/some/path", local_addr.unwrap())
+            .parse()
+            .unwrap();
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+
+            let mut request = Vec::new();
+
+            let head_len = loop {
+                read_more(&mut stream, &mut request).await;
+
+                if let Some(pos) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                    break pos + 4;
+                }
+            };
+
+            let head = std::str::from_utf8(&request[..head_len])
+                .unwrap()
+                .to_string();
+
+            let content_length = head
+                .lines()
+                .filter_map(|line| line.split_once(':'))
+                .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                .map(|(_, value)| value.trim().parse().unwrap())
+                .unwrap_or(0);
+
+            while request.len() < head_len + content_length {
+                read_more(&mut stream, &mut request).await;
+            }
+
+            let response = format!(
+                "HTTP/1.1 {status} Status\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+
+            stream.write_all(response.as_bytes()).await.unwrap();
+
+            (head, request.split_off(head_len))
+        });
+
+        (url, server)
+    }
+
+    /// Read more data from a given stream into a given buffer.
+    async fn read_more(stream: &mut TcpStream, buffer: &mut Vec<u8>) {
+        let mut chunk = [0u8; 4096];
+
+        let len = stream.read(&mut chunk).await.unwrap();
+
+        assert!(len > 0, "connection closed");
+
+        buffer.extend_from_slice(&chunk[..len]);
+    }
+
+    #[test]
+    fn only_transient_errors_can_be_retried() {
+        let cases = [
+            (400, false),
+            (401, false),
+            (403, false),
+            (404, false),
+            (408, true),
+            (413, false),
+            (429, true),
+            (500, true),
+            (502, true),
+            (503, true),
+        ];
+
+        for (code, expected) in cases {
+            let status = StatusCode::from_u16(code).unwrap();
+
+            let err = SendError::from(HttpClientError::UnexpectedStatusCode(status, Bytes::new()));
+
+            assert_eq!(err.can_retry(), expected, "HTTP {code}");
+        }
+
+        let err = SendError::from(HttpClientError::Other(Error::from_static_msg(
+            "connection reset",
+        )));
+
+        assert!(err.can_retry());
+    }
+
+    #[tokio::test]
+    async fn http_client_sends_configured_request() {
+        let (url, server) = serve_once(200, "").await;
+
+        let client = HttpClient::builder()
+            .method(Method::PUT)
+            .header("X-Test", "value")
+            .unwrap()
+            .build(url)
+            .unwrap();
+
+        client.send(Bytes::from_static(b"payload")).await.unwrap();
+
+        let (head, body) = server.await.unwrap();
+
+        assert!(head.starts_with("PUT /some/path HTTP/1.1\r\n"), "{head}");
+        assert!(
+            head.to_ascii_lowercase().contains("\r\nx-test: value\r\n"),
+            "{head}"
+        );
+        assert_eq!(body, b"payload");
+    }
+
+    #[tokio::test]
+    async fn http_client_reports_unexpected_status() {
+        let (url, server) = serve_once(503, "busy").await;
+
+        let client = HttpClient::builder().build(url).unwrap();
+
+        match client.send(Bytes::new()).await {
+            Err(HttpClientError::UnexpectedStatusCode(status, body)) => {
+                assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+                assert_eq!(body, "busy");
+            }
+            res => panic!("unexpected result: {res:?}"),
+        }
+
+        server.await.unwrap();
+    }
+}

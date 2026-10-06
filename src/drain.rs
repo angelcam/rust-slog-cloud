@@ -211,3 +211,457 @@ impl<M> CloudDrainHandle<M> {
         self.sender.blocking_flush();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{future::Future, time::Duration};
+
+    use bytes::Bytes;
+    use futures::poll;
+    use slog::{info, o, Drain, Logger, OwnedKVList, Record};
+    use tokio::sync::{mpsc, oneshot};
+
+    use crate::{
+        batch::BatchBuilder,
+        client::{Client, HttpClientError, SendError, StatusCode},
+        serializer::LogMessageSerializer,
+    };
+
+    use super::{CloudDrainBuilder, CloudDrainHandle, CloudDrainTask};
+
+    /// Serializer producing just the log message text.
+    struct MessageSerializer;
+
+    impl LogMessageSerializer for MessageSerializer {
+        type Serialized = String;
+
+        fn serialize(&self, record: &Record, _: &OwnedKVList) -> slog::Result<String> {
+            Ok(record.msg().to_string())
+        }
+    }
+
+    /// Batch builder grouping up to a given number of messages.
+    struct VecBatchBuilder {
+        batch: Vec<String>,
+        max_len: usize,
+    }
+
+    impl BatchBuilder for VecBatchBuilder {
+        type Item = String;
+        type Batch = Vec<String>;
+
+        fn push(&mut self, item: String) -> Option<Vec<String>> {
+            let res = if self.batch.len() < self.max_len {
+                None
+            } else {
+                Some(std::mem::take(&mut self.batch))
+            };
+
+            self.batch.push(item);
+
+            res
+        }
+
+        fn flush(&mut self) -> Option<Vec<String>> {
+            if self.batch.is_empty() {
+                None
+            } else {
+                Some(std::mem::take(&mut self.batch))
+            }
+        }
+    }
+
+    /// Send request intercepted by the mock client.
+    struct Request {
+        batch: Vec<String>,
+        response: oneshot::Sender<Result<(), SendError>>,
+    }
+
+    impl Request {
+        /// Respond with `Ok(())`.
+        fn respond_ok(self) {
+            let _ = self.response.send(Ok(()));
+        }
+
+        /// Response with unexpected status code.
+        fn respond_status(self, status: StatusCode) {
+            let err = HttpClientError::UnexpectedStatusCode(status, Bytes::new());
+
+            let _ = self.response.send(Err(err.into()));
+        }
+    }
+
+    /// Client passing all send requests to the test.
+    struct MockClient {
+        requests: mpsc::UnboundedSender<Request>,
+    }
+
+    impl Client for MockClient {
+        type Message = Vec<String>;
+
+        async fn send(&self, batch: Vec<String>) -> Result<(), SendError> {
+            let (tx, rx) = oneshot::channel();
+
+            let _ = self.requests.send(Request {
+                batch,
+                response: tx,
+            });
+
+            // treat requests left behind by a finished test as delivered
+            rx.await.unwrap_or(Ok(()))
+        }
+    }
+
+    /// Helper struct.
+    struct TestDrain {
+        logger: Logger,
+        task: CloudDrainTask,
+        handle: CloudDrainHandle<String>,
+        requests: mpsc::UnboundedReceiver<Request>,
+    }
+
+    /// Get a drain builder with negligible retry delays.
+    fn builder() -> CloudDrainBuilder {
+        CloudDrainBuilder::new()
+            .initial_retry_delay(Duration::from_millis(1))
+            .max_retry_delay(Duration::from_millis(1))
+    }
+
+    /// Build a test drain with a given maximum batch length.
+    fn build(builder: CloudDrainBuilder, max_batch_len: usize) -> TestDrain {
+        let (tx, rx) = mpsc::unbounded_channel();
+
+        let client = MockClient { requests: tx };
+
+        let batch_builder = VecBatchBuilder {
+            batch: Vec::new(),
+            max_len: max_batch_len,
+        };
+
+        let (drain, task, handle) = builder.build(client, MessageSerializer, batch_builder);
+
+        TestDrain {
+            logger: Logger::root(drain.fuse(), o!()),
+            task,
+            handle,
+            requests: rx,
+        }
+    }
+
+    /// Panic if the future takes more than 5 seconds to complete.
+    async fn within<F>(fut: F) -> F::Output
+    where
+        F: Future,
+    {
+        tokio::time::timeout(Duration::from_secs(5), fut)
+            .await
+            .expect("timed out")
+    }
+
+    /// Get the next request or panic.
+    async fn next_request(requests: &mut mpsc::UnboundedReceiver<Request>) -> Request {
+        within(requests.recv())
+            .await
+            .expect("request channel closed")
+    }
+
+    /// Wait 50 milliseconds for a request and panic if there is one.
+    async fn assert_no_request(requests: &mut mpsc::UnboundedReceiver<Request>) {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        assert!(requests.try_recv().is_err(), "unexpected request");
+    }
+
+    #[tokio::test]
+    async fn batches_queued_messages() {
+        let TestDrain {
+            logger,
+            task,
+            handle: _handle,
+            mut requests,
+        } = build(builder(), 2);
+
+        for msg in ["a", "b", "c", "d", "e"] {
+            info!(logger, "{}", msg);
+        }
+
+        tokio::spawn(task);
+
+        let mut batches = Vec::new();
+
+        for _ in 0..3 {
+            let req = next_request(&mut requests).await;
+
+            batches.push(req.batch.clone());
+
+            req.respond_ok();
+        }
+
+        // the batches are sent concurrently
+        batches.sort();
+
+        assert_eq!(batches, [vec!["a", "b"], vec!["c", "d"], vec!["e"]]);
+    }
+
+    #[tokio::test]
+    async fn sends_partial_batch_without_waiting() {
+        let TestDrain {
+            logger,
+            task,
+            handle: _handle,
+            mut requests,
+        } = build(builder(), 10);
+
+        tokio::spawn(task);
+
+        info!(logger, "a");
+
+        assert_eq!(next_request(&mut requests).await.batch, ["a"]);
+    }
+
+    #[tokio::test]
+    async fn flush_waits_for_message_delivery() {
+        let TestDrain {
+            logger,
+            task,
+            handle,
+            mut requests,
+        } = build(builder(), 10);
+
+        tokio::spawn(task);
+
+        info!(logger, "a");
+
+        let mut flush = std::pin::pin!(handle.flush());
+
+        assert!(poll!(flush.as_mut()).is_pending());
+
+        let req = next_request(&mut requests).await;
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        assert!(poll!(flush.as_mut()).is_pending());
+
+        req.respond_ok();
+
+        within(flush).await;
+    }
+
+    #[tokio::test]
+    async fn flush_does_not_wait_for_messages_logged_after_it() {
+        let TestDrain {
+            logger,
+            task,
+            handle,
+            mut requests,
+        } = build(builder(), 10);
+
+        tokio::spawn(task);
+
+        info!(logger, "a");
+
+        let mut flush = std::pin::pin!(handle.flush());
+
+        assert!(poll!(flush.as_mut()).is_pending());
+
+        info!(logger, "b");
+
+        let req = next_request(&mut requests).await;
+
+        assert_eq!(req.batch, ["a"]);
+
+        req.respond_ok();
+
+        let req = next_request(&mut requests).await;
+
+        assert_eq!(req.batch, ["b"]);
+
+        // the flush completes while "b" is still in flight
+        within(flush).await;
+    }
+
+    #[tokio::test]
+    async fn retries_failed_sends() {
+        let TestDrain {
+            logger,
+            task,
+            handle,
+            mut requests,
+        } = build(builder(), 10);
+
+        tokio::spawn(task);
+
+        info!(logger, "a");
+
+        next_request(&mut requests)
+            .await
+            .respond_status(StatusCode::SERVICE_UNAVAILABLE);
+
+        next_request(&mut requests)
+            .await
+            .respond_status(StatusCode::TOO_MANY_REQUESTS);
+
+        let req = next_request(&mut requests).await;
+
+        assert_eq!(req.batch, ["a"]);
+
+        req.respond_ok();
+
+        within(handle.flush()).await;
+
+        assert_no_request(&mut requests).await;
+    }
+
+    #[tokio::test]
+    async fn gives_up_after_max_retries() {
+        let TestDrain {
+            logger,
+            task,
+            handle,
+            mut requests,
+        } = build(builder().max_retries(Some(2)), 10);
+
+        tokio::spawn(task);
+
+        info!(logger, "a");
+
+        for _ in 0..3 {
+            next_request(&mut requests)
+                .await
+                .respond_status(StatusCode::SERVICE_UNAVAILABLE);
+        }
+
+        within(handle.flush()).await;
+
+        assert_no_request(&mut requests).await;
+    }
+
+    #[tokio::test]
+    async fn does_not_retry_non_retryable_errors() {
+        let TestDrain {
+            logger,
+            task,
+            handle,
+            mut requests,
+        } = build(builder(), 10);
+
+        tokio::spawn(task);
+
+        info!(logger, "a");
+
+        next_request(&mut requests)
+            .await
+            .respond_status(StatusCode::BAD_REQUEST);
+
+        within(handle.flush()).await;
+
+        assert_no_request(&mut requests).await;
+    }
+
+    #[tokio::test]
+    async fn limits_concurrent_sends() {
+        let TestDrain {
+            logger,
+            task,
+            handle: _handle,
+            mut requests,
+        } = build(builder().max_concurrency(2), 1);
+
+        for msg in ["a", "b", "c"] {
+            info!(logger, "{}", msg);
+        }
+
+        tokio::spawn(task);
+
+        let first = next_request(&mut requests).await;
+        let second = next_request(&mut requests).await;
+
+        assert_no_request(&mut requests).await;
+
+        let mut batches = vec![first.batch.clone(), second.batch.clone()];
+
+        first.respond_ok();
+
+        batches.push(next_request(&mut requests).await.batch);
+        batches.sort();
+
+        assert_eq!(batches, [["a"], ["b"], ["c"]]);
+    }
+
+    #[tokio::test]
+    async fn bounded_queue_drops_oldest_messages_but_keeps_flushes() {
+        let TestDrain {
+            logger,
+            task,
+            handle,
+            mut requests,
+        } = build(builder().queue_capacity(Some(1)), 10);
+
+        let mut flush = std::pin::pin!(handle.flush());
+
+        assert!(poll!(flush.as_mut()).is_pending());
+
+        // the flush stays in front of "b" even though "a" gets dropped
+        info!(logger, "a");
+        info!(logger, "b");
+
+        tokio::spawn(task);
+
+        let req = next_request(&mut requests).await;
+
+        assert_eq!(req.batch, ["b"]);
+
+        // the flush completes while "b" is still in flight
+        within(flush).await;
+    }
+
+    #[tokio::test]
+    async fn flush_completes_when_task_is_dropped() {
+        let TestDrain {
+            logger,
+            task,
+            handle,
+            requests: _requests,
+        } = build(builder(), 10);
+
+        info!(logger, "a");
+
+        let mut flush = std::pin::pin!(handle.flush());
+
+        assert!(poll!(flush.as_mut()).is_pending());
+
+        std::mem::drop(task);
+
+        within(flush).await;
+        within(handle.flush()).await;
+    }
+
+    #[tokio::test]
+    async fn task_delivers_pending_messages_before_finishing() {
+        let TestDrain {
+            logger,
+            task,
+            handle,
+            mut requests,
+        } = build(builder(), 10);
+
+        info!(logger, "a");
+
+        std::mem::drop(logger);
+        std::mem::drop(handle);
+
+        let task = tokio::spawn(task);
+
+        let req = next_request(&mut requests).await;
+
+        assert_eq!(req.batch, ["a"]);
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        assert!(!task.is_finished());
+
+        req.respond_ok();
+
+        within(task).await.unwrap();
+    }
+}

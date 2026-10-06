@@ -315,3 +315,90 @@ impl Client for InternalClient {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use chrono::{DateTime, Utc};
+    use slog::{info, o, warn, Key};
+
+    use crate::serializer::{test_utils::serialize_logs, AcceptAll};
+
+    use super::BetterStackSerializer;
+
+    #[test]
+    fn serializes_log_record() {
+        let serializer = BetterStackSerializer::new(AcceptAll, "misc");
+
+        let logs = serialize_logs(serializer, |log| {
+            warn!(log, "hello {}", "world"; "key" => "value");
+        });
+
+        let msg = &logs[0];
+
+        assert_eq!(msg["level"], "warn");
+        assert_eq!(msg["message"], "hello world");
+        assert_eq!(msg["key"], "value");
+
+        let file = msg["file"].as_str().unwrap();
+
+        assert!(file.starts_with(concat!(file!(), ":")), "{file}");
+
+        let timestamp: DateTime<Utc> = msg["dt"].as_str().unwrap().parse().unwrap();
+
+        assert!((Utc::now() - timestamp).num_seconds().abs() < 60);
+    }
+
+    #[test]
+    fn later_key_values_take_precedence() {
+        let serializer = BetterStackSerializer::new(AcceptAll, "misc");
+
+        let logs = serialize_logs(serializer, |log| {
+            let parent = log.new(o!("a" => "parent", "b" => "parent"));
+            let child = parent.new(o!("a" => "child"));
+
+            info!(child, "msg"; "b" => "record", "c" => "first", "c" => "second");
+        });
+
+        let msg = &logs[0];
+
+        assert_eq!(msg["a"], "child");
+        assert_eq!(msg["b"], "record");
+        assert_eq!(msg["c"], "second");
+    }
+
+    #[test]
+    fn reserved_fields_cannot_be_overridden() {
+        let serializer = BetterStackSerializer::new(AcceptAll, "misc");
+
+        let logs = serialize_logs(serializer, |log| {
+            let log = log.new(o!("level" => "fake"));
+
+            info!(log, "msg"; "message" => "fake", "file" => "fake", "dt" => "fake");
+        });
+
+        let msg = &logs[0];
+
+        assert_eq!(msg["level"], "info");
+        assert_eq!(msg["message"], "msg");
+        assert_ne!(msg["file"], "fake");
+        assert_ne!(msg["dt"], "fake");
+    }
+
+    #[test]
+    fn kv_filter_does_not_apply_to_reserved_fields() {
+        let serializer = BetterStackSerializer::new(|_: &Key| false, "extra");
+
+        let logs = serialize_logs(serializer, |log| {
+            info!(log, "msg"; "key" => "value");
+        });
+
+        let msg = &logs[0];
+
+        assert_eq!(msg["level"], "info");
+        assert_eq!(msg["message"], "msg");
+        assert!(msg["file"].is_string());
+        assert!(msg["dt"].is_string());
+        assert!(msg.get("key").is_none());
+        assert_eq!(msg["extra"], "key: value");
+    }
+}

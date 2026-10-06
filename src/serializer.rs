@@ -273,3 +273,130 @@ where
         self.emit_serde_json_string(key, val)
     }
 }
+
+#[cfg(all(test, any(feature = "loggly", feature = "better-stack")))]
+pub mod test_utils {
+    use std::{
+        panic::{RefUnwindSafe, UnwindSafe},
+        sync::{Arc, Mutex},
+    };
+
+    use bytes::Bytes;
+    use slog::{o, Drain, Logger, OwnedKVList, Record};
+
+    use super::LogMessageSerializer;
+
+    /// Log collecting drain.
+    struct CollectingDrain<S> {
+        serializer: S,
+        messages: Arc<Mutex<Vec<serde_json::Value>>>,
+    }
+
+    impl<S> Drain for CollectingDrain<S>
+    where
+        S: LogMessageSerializer<Serialized = Bytes>,
+    {
+        type Ok = ();
+        type Err = slog::Never;
+
+        fn log(&self, record: &Record, values: &OwnedKVList) -> Result<(), slog::Never> {
+            let msg = self.serializer.serialize(record, values).unwrap();
+            let msg = serde_json::from_slice(&msg).unwrap();
+
+            self.messages.lock().unwrap().push(msg);
+
+            Ok(())
+        }
+    }
+
+    /// Serialize all records logged by a given function using a given
+    /// serializer and parse them back as JSON.
+    pub fn serialize_logs<S, F>(serializer: S, f: F) -> Vec<serde_json::Value>
+    where
+        S: LogMessageSerializer<Serialized = Bytes>
+            + Send
+            + Sync
+            + RefUnwindSafe
+            + UnwindSafe
+            + 'static,
+        F: FnOnce(&Logger),
+    {
+        let messages = Arc::new(Mutex::new(Vec::new()));
+
+        let drain = CollectingDrain {
+            serializer,
+            messages: messages.clone(),
+        };
+
+        f(&Logger::root(drain, o!()));
+
+        let mut messages = messages.lock().unwrap();
+
+        std::mem::take(&mut *messages)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bytes::Bytes;
+    use slog::{Key, Serializer};
+
+    use super::JsonMessageBuilder;
+
+    fn parse(msg: Bytes) -> serde_json::Value {
+        serde_json::from_slice(&msg).unwrap()
+    }
+
+    #[test]
+    fn serializes_value_types() {
+        let mut builder = JsonMessageBuilder::new();
+
+        builder.emit_bool("bool", true).unwrap();
+        builder.emit_unit("unit").unwrap();
+        builder.emit_none("none").unwrap();
+        builder.emit_char("char", 'c').unwrap();
+        builder.emit_i64("i64", i64::MIN).unwrap();
+        builder.emit_u64("u64", u64::MAX).unwrap();
+        builder.emit_f32("f32", 0.5).unwrap();
+        builder.emit_f64("nan", f64::NAN).unwrap();
+        builder
+            .emit_arguments("args", &format_args!("{}-{}", 1, 2))
+            .unwrap();
+
+        let expected = serde_json::json!({
+            "bool": true,
+            "unit": null,
+            "none": null,
+            "char": "c",
+            "i64": i64::MIN,
+            "u64": u64::MAX,
+            "f32": 0.5,
+            "nan": null,
+            "args": "1-2",
+        });
+
+        assert_eq!(parse(builder.finish().unwrap()), expected);
+    }
+
+    #[test]
+    fn collects_rejected_keys_in_fallback_field() {
+        let filter = |key: &Key| key.starts_with('a');
+
+        let mut builder = JsonMessageBuilder::new().with_field_filter("misc", &filter);
+
+        builder.emit_u32("a", 1).unwrap();
+        builder.emit_str("b", "x").unwrap();
+        builder.emit_bool("c", true).unwrap();
+        // a key colliding with the fallback field must not replace it
+        builder.emit_str("misc", "user").unwrap();
+        // the first value wins in the fallback field as well
+        builder.emit_str("b", "y").unwrap();
+
+        let expected = serde_json::json!({
+            "a": 1,
+            "misc": "b: x, c: true, misc: user",
+        });
+
+        assert_eq!(parse(builder.finish().unwrap()), expected);
+    }
+}

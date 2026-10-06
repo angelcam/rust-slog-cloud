@@ -108,3 +108,36 @@ impl BatchBuilder for NDJSONBatchBuilder {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use bytes::Bytes;
+
+    use super::{BatchBuilder, NDJSONBatchBuilder};
+
+    fn batch(s: &'static str) -> Option<Bytes> {
+        Some(Bytes::from_static(s.as_bytes()))
+    }
+
+    #[test]
+    fn ndjson_batch_is_emitted_when_next_item_does_not_fit() {
+        let mut builder = NDJSONBatchBuilder::new(8);
+
+        assert_eq!(builder.push(Bytes::from_static(b"aaa")), None);
+        // the batch is exactly 8 bytes now
+        assert_eq!(builder.push(Bytes::from_static(b"bbb")), None);
+        assert_eq!(builder.push(Bytes::from_static(b"c")), batch("aaa\nbbb\n"));
+        assert_eq!(builder.flush(), batch("c\n"));
+        assert_eq!(builder.flush(), None);
+    }
+
+    #[test]
+    fn oversized_ndjson_item_forms_its_own_batch() {
+        let mut builder = NDJSONBatchBuilder::new(4);
+
+        assert_eq!(builder.push(Bytes::from_static(b"a")), None);
+        assert_eq!(builder.push(Bytes::from_static(b"bbbbbb")), batch("a\n"));
+        assert_eq!(builder.push(Bytes::from_static(b"c")), batch("bbbbbb\n"));
+        assert_eq!(builder.flush(), batch("c\n"));
+    }
+}
