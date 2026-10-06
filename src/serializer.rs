@@ -282,7 +282,7 @@ pub mod test_utils {
     };
 
     use bytes::Bytes;
-    use slog::{o, Drain, Logger, OwnedKVList, Record};
+    use slog::{Drain, Logger, OwnedKVList, Record, o};
 
     use super::LogMessageSerializer;
 

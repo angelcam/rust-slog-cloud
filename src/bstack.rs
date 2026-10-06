@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use chrono::{SecondsFormat, Utc};
-use slog::{Key, Level, OwnedKVList, Record, Serializer, KV};
+use slog::{KV, Key, Level, OwnedKVList, Record, Serializer};
 
 use crate::{
     batch::NDJSONBatchBuilder,
@@ -319,9 +319,9 @@ impl Client for InternalClient {
 #[cfg(test)]
 mod tests {
     use chrono::{DateTime, Utc};
-    use slog::{info, o, warn, Key};
+    use slog::{Key, info, o, warn};
 
-    use crate::serializer::{test_utils::serialize_logs, AcceptAll};
+    use crate::serializer::{AcceptAll, test_utils::serialize_logs};
 
     use super::BetterStackSerializer;
 

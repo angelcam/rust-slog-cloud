@@ -218,7 +218,7 @@ mod tests {
 
     use bytes::Bytes;
     use futures::poll;
-    use slog::{info, o, Drain, Logger, OwnedKVList, Record};
+    use slog::{Drain, Logger, OwnedKVList, Record, info, o};
     use tokio::sync::{mpsc, oneshot};
 
     use crate::{

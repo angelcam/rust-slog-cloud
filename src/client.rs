@@ -6,7 +6,7 @@ use std::{
 use bytes::Bytes;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 
-pub use reqwest::{header, Method, StatusCode, Url};
+pub use reqwest::{Method, StatusCode, Url, header};
 
 use crate::error::Error;
 

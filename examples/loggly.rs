@@ -1,4 +1,4 @@
-use slog::{debug, error, info, o, warn, Drain, Logger};
+use slog::{Drain, Logger, debug, error, info, o, warn};
 use slog_cloud::loggly::LogglyDrainBuilder;
 
 fn main() {
