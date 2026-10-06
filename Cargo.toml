@@ -1,0 +1,52 @@
+[package]
+name = "slog-cloud"
+version = "0.1.0"
+edition = "2021"
+authors = ["Angelcam, Inc."]
+license = "MIT/Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/angelcam/rust-slog-cloud"
+documentation = "https://docs.rs/slog-cloud"
+homepage = "https://github.com/angelcam/rust-slog-cloud"
+description = """
+This is an unofficial crate for cloud-based drains for the slog logging infrastructure in Rust.
+"""
+categories = ["development-tools::debugging"]
+keywords = ["logging", "slog"]
+
+[[example]]
+name = "loggly"
+required-features = ["loggly", "runtime"]
+
+[features]
+default = []
+loggly = ["dep:chrono"]
+better-stack = ["dep:chrono"]
+runtime = ["tokio/rt"]
+http2 = ["reqwest/http2"]
+
+[dependencies]
+bytes = "1"
+futures = "0.3"
+pin-project-lite = "0.2"
+serde = "1"
+serde_json = "1"
+slog = "2.5"
+trait-variant = "0.1"
+
+[dependencies.chrono]
+version = "0.4"
+optional = true
+
+[dependencies.reqwest]
+version = "0.13"
+default-features = false
+features = ["default-tls"]
+
+[dependencies.tokio]
+version  = "1"
+features = ["sync"]
+
+[dev-dependencies.tokio]
+version    = "1"
+features = ["full"]
