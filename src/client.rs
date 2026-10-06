@@ -114,7 +114,11 @@ impl From<HttpClientError> for Error {
 impl From<HttpClientError> for SendError {
     fn from(err: HttpClientError) -> Self {
         let can_retry = match err {
-            HttpClientError::UnexpectedStatusCode(status, _) => status.is_server_error(),
+            HttpClientError::UnexpectedStatusCode(status, _) => {
+                let code = status.as_u16();
+
+                code == 408 || code == 429 || code >= 500
+            }
             HttpClientError::Other(_) => true,
         };
 
@@ -177,7 +181,7 @@ impl HttpClientBuilder {
         self
     }
 
-    /// Set the request timeout (the default is 5 seconds).
+    /// Set the request timeout (the default is 60 seconds).
     #[inline]
     pub fn request_timeout(mut self, timeout: Duration) -> Self {
         self.request_timeout = timeout;

@@ -1,10 +1,10 @@
 use std::{
-    collections::HashMap,
     fmt::{self, Write},
     io,
 };
 
 use bytes::Bytes;
+use indexmap::IndexMap;
 use slog::{Key, OwnedKVList, Record};
 
 /// Log message serializer.
@@ -47,8 +47,8 @@ impl KVFilter for AcceptAll {
 
 /// JSON log message builder.
 pub struct JsonMessageBuilder<'a, F = AcceptAll> {
-    field_map: HashMap<Key, serde_json::Value>,
-    misc_map: HashMap<Key, serde_json::Value>,
+    field_map: IndexMap<Key, serde_json::Value>,
+    misc_map: IndexMap<Key, serde_json::Value>,
     misc_name: Key,
     field_filter: &'a F,
 }
@@ -57,8 +57,8 @@ impl JsonMessageBuilder<'static> {
     /// Create a new log message builder.
     pub fn new() -> Self {
         Self {
-            field_map: HashMap::new(),
-            misc_map: HashMap::new(),
+            field_map: IndexMap::new(),
+            misc_map: IndexMap::new(),
             misc_name: "misc",
             field_filter: &AcceptAll,
         }
@@ -136,9 +136,9 @@ where
     /// Emit a given serde_json::Value key-value pair.
     fn emit_serde_json_value(&mut self, key: Key, val: serde_json::Value) -> slog::Result {
         if self.field_filter.is_accepted(&key) && key != self.misc_name {
-            self.field_map.insert(key, val);
+            self.field_map.entry(key).or_insert(val);
         } else {
-            self.misc_map.insert(key, val);
+            self.misc_map.entry(key).or_insert(val);
         }
 
         Ok(())

@@ -16,13 +16,12 @@ keywords = ["logging", "slog"]
 
 [[example]]
 name = "loggly"
-required-features = ["loggly", "runtime"]
+required-features = ["loggly"]
 
 [features]
 default = []
 loggly = ["dep:chrono"]
 better-stack = ["dep:chrono"]
-runtime = ["tokio/rt"]
 http2 = ["reqwest/http2"]
 
 [dependencies]
@@ -38,6 +37,10 @@ trait-variant = "0.1"
 version = "0.4"
 optional = true
 
+[dependencies.indexmap]
+version = "2"
+features = ["serde"]
+
 [dependencies.reqwest]
 version = "0.13"
 default-features = false
@@ -45,7 +48,7 @@ features = ["default-tls"]
 
 [dependencies.tokio]
 version  = "1"
-features = ["sync"]
+features = ["net", "rt", "sync", "time"]
 
 [dev-dependencies.tokio]
 version    = "1"

@@ -37,7 +37,7 @@ impl<M> MessageQueue<M> {
 
 impl<M> Drop for MessageQueue<M> {
     fn drop(&mut self) {
-        self.context.lock().unwrap().close();
+        self.context.lock().unwrap().clear_and_close();
     }
 }
 
@@ -292,6 +292,12 @@ impl<M> MessageQueueContext<M> {
                 task.wake();
             }
         }
+    }
+
+    /// Clear all items in the queue and close it.
+    fn clear_and_close(&mut self) {
+        self.queue.clear();
+        self.close();
     }
 
     /// Close the queue.

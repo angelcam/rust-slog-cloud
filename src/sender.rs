@@ -181,7 +181,7 @@ where
 
                 tokio::time::sleep(retry_delay).await;
 
-                retry_delay = max_retry_delay.min(retry_delay * 2);
+                retry_delay = max_retry_delay.min(retry_delay.saturating_mul(2));
             }
 
             std::mem::drop(permit);

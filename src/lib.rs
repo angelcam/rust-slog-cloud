@@ -1,11 +1,14 @@
-//! A Rust library providing an slog drain for sending log messages to Loggly.
+//! A Rust library providing slog drains for sending log messages to
+//! cloud-based log storages. The crate implements drains for Loggly and
+//! Better Stack. Drains for custom providers can be easily implemented using
+//! the `CloudDrain` type.
 //!
 //! # Things to be aware of
 //!
-//! The drain serializes all log messages as JSON objects. If you use key-value
-//! pairs in your loggers and log messages, you should know that one key-value
-//! pair can override another if they both have the same key. The overrides
-//! follow this simple rule:
+//! The Loggly and Better Stack drains serialize all log messages as JSON
+//! objects. If you use key-value pairs in your loggers and log messages, you
+//! should know that one key-value pair can override another if they both have
+//! the same key. The overrides follow this simple rule:
 //! 1. Derived loggers can override key-value pairs of their ancestors.
 //! 2. Log messages can override key-value pairs of their loggers.
 //! 3. The latest specified key-value pair overrides everything specified
@@ -13,7 +16,7 @@
 //!
 //! # Usage
 //!
-//! Please note that the Loggly drain is asynchronous and the log messages are
+//! Please note that the drains are asynchronous and the log messages are
 //! sent on background. If your application exits, there might be still some
 //! log messages in the queue.
 //!
@@ -30,7 +33,7 @@
 //!     let loggly_tag = "some-app";
 //!
 //!     // Create a custom Loggly drain.
-//!     let (drain, mut fhandle) = LogglyDrainBuilder::new()
+//!     let (drain, handle) = LogglyDrainBuilder::new()
 //!         .spawn_task(loggly_token, loggly_tag)
 //!         .unwrap();
 //!
@@ -43,7 +46,7 @@
 //!     error!(logger, "error"; "key" => "value");
 //!
 //!     // Flush all log messages.
-//!     // fhandle.flush().await;
+//!     handle.flush().await;
 //! }
 //! ```
 //!
@@ -58,7 +61,7 @@
 //! let loggly_tag = "some-app";
 //!
 //! // Create a custom Loggly drain.
-//! let (drain, mut fhandle) = LogglyDrainBuilder::new()
+//! let (drain, handle) = LogglyDrainBuilder::new()
 //!     .spawn_thread(loggly_token, loggly_tag)
 //!     .unwrap();
 //!
@@ -71,8 +74,12 @@
 //! error!(logger, "error"; "key" => "value");
 //!
 //! // Flush all log messages.
-//! fhandle.blocking_flush();
+//! handle.blocking_flush();
 //! ```
+//!
+//! ## Using the Better Stack drain
+//!
+//! The Better Stack drain usage is analogous to the Loggly drain.
 
 mod drain;
 mod error;

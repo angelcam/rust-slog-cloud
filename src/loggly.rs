@@ -142,7 +142,6 @@ impl<F> LogglyDrainBuilder<F> {
 
     /// Build the drain and spawn a tokio task responsible for sending log
     /// messages.
-    #[cfg(feature = "runtime")]
     pub fn spawn_task(
         self,
         token: &str,
@@ -157,7 +156,6 @@ impl<F> LogglyDrainBuilder<F> {
 
     /// Build the drain and spawn a thread responsible for sending log
     /// messages.
-    #[cfg(feature = "runtime")]
     pub fn spawn_thread(
         self,
         token: &str,
@@ -231,16 +229,16 @@ where
         builder.emit_arguments("file", &format_args!("{}:{}", file, line))?;
         builder.emit_arguments("message", record.msg())?;
 
-        logger_values.serialize(record, &mut builder)?;
-
-        record.kv().serialize(record, &mut builder)?;
-
         let timestamp = Utc::now();
 
         builder.emit_str(
             "timestamp",
             &timestamp.to_rfc3339_opts(SecondsFormat::Micros, true),
         )?;
+
+        record.kv().serialize(record, &mut builder)?;
+
+        logger_values.serialize(record, &mut builder)?;
 
         builder.finish()
     }
