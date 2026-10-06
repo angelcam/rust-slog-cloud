@@ -1,3 +1,5 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 //! A Rust library providing slog drains for sending log messages to
 //! cloud-based log storages. The crate implements drains for Loggly and
 //! Better Stack. Drains for custom providers can be easily implemented using

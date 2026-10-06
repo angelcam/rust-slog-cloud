@@ -7,7 +7,6 @@ license = "MIT/Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/angelcam/rust-slog-cloud"
 documentation = "https://docs.rs/slog-cloud"
-homepage = "https://github.com/angelcam/rust-slog-cloud"
 description = """
 This is an unofficial crate for cloud-based drains for the slog logging infrastructure in Rust.
 """
