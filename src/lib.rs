@@ -91,9 +91,11 @@ pub mod client;
 pub mod serializer;
 
 #[cfg(feature = "better-stack")]
+#[cfg_attr(docsrs, doc(cfg(feature = "better-stack")))]
 pub mod bstack;
 
 #[cfg(feature = "loggly")]
+#[cfg_attr(docsrs, doc(cfg(feature = "loggly")))]
 pub mod loggly;
 
 pub use self::{
