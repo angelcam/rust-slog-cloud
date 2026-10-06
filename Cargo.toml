@@ -1,6 +1,6 @@
 [package]
 name = "slog-cloud"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 authors = ["Angelcam, Inc."]
 license = "MIT/Apache-2.0"
